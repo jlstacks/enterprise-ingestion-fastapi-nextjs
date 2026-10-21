@@ -49,7 +49,7 @@ export function IngestionConsole({ online, onAccepted }: { online: boolean; onAc
         <span className="badge">DEMO PAYLOAD</span>
       </div>
       <p className="mt-4 text-sm leading-6 text-slate-400">
-        FastAPI validates 1–100 items, persists a job, and returns HTTP 202 before Celery completes processing.
+        FastAPI validates 1–100 items, persists a job, and returns its acceptance or existing processing outcome.
       </p>
       <label htmlFor="payload" className="sr-only">JSON ingestion payload</label>
       <textarea

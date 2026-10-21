@@ -44,7 +44,8 @@ def serialize_record(record: Record) -> dict[str, Any]:
 def records_cache_key(cache: Redis, source: str | None, limit: int, offset: int) -> str:
     raw_version = cache.get(RECORDS_VERSION_KEY)
     version = raw_version.decode() if isinstance(raw_version, bytes) else (raw_version or "0")
-    return f"ingestion:records:v{version}:{source or 'all'}:{limit}:{offset}"
+    query = json.dumps([source, limit, offset], separators=(",", ":"), ensure_ascii=True)
+    return f"ingestion:records:v{version}:{query}"
 
 
 def invalidate_read_caches(cache: Redis) -> None:

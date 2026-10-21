@@ -55,14 +55,32 @@ export const emptyMetrics: Metrics = {
   failed: 0,
 };
 
-export async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/${path}`, { cache: 'no-store', ...options });
-  const value = (await response.json()) as T & { detail?: string | unknown };
-  if (!response.ok) {
+async function request<T>(path: string, options?: RequestInit, healthResponse = false): Promise<T> {
+  const timeout = AbortSignal.timeout(8000);
+  const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  const response = await fetch(`/api/${path}`, { cache: 'no-store', ...options, signal });
+  let value: T & { detail?: string | unknown };
+  try {
+    value = await response.json();
+  } catch {
+    throw new Error(`API returned an invalid response (${response.status})`);
+  }
+  const healthValue = value as unknown as Partial<Health>;
+  const unavailableHealth = healthResponse && response.status === 503 &&
+    healthValue.status === 'unavailable' && healthValue.api === 'online';
+  if (!response.ok && !unavailableHealth) {
     const detail = typeof value.detail === 'string' ? value.detail : JSON.stringify(value.detail);
     throw new Error(detail || `API request failed (${response.status})`);
   }
   return value;
+}
+
+export async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  return request<T>(path, options);
+}
+
+export async function apiHealth(options?: RequestInit): Promise<Health> {
+  return request<Health>('health', options, true);
 }
 
 export function formatTimestamp(value: string | null): string {

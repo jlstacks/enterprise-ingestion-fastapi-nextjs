@@ -12,6 +12,14 @@ class IngestItem(StrictModel):
     external_id: str | None = Field(default=None, min_length=1, max_length=128)
     payload: dict[str, Any] = Field(min_length=1)
 
+    @field_validator("external_id")
+    @classmethod
+    def validate_external_id(cls, value: str | None) -> str | None:
+        if value is not None and any(ord(character) < 32 or 127 <= ord(character) <= 159
+                                     or 0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ValueError("external_id must not contain control characters or invalid Unicode")
+        return value
+
 
 class IngestRequest(StrictModel):
     source: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

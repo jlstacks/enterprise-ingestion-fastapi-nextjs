@@ -23,5 +23,5 @@ def test_request_hash_changes_with_payload():
 
 
 def test_cache_key_includes_version_and_query_shape():
-    assert records_cache_key(FakeRedis("7"), "crm", 20, 40) == "ingestion:records:v7:crm:20:40"
-    assert records_cache_key(FakeRedis(None), None, 10, 0) == "ingestion:records:v0:all:10:0"
+    assert records_cache_key(FakeRedis("7"), "crm", 20, 40) == 'ingestion:records:v7:["crm",20,40]'
+    assert records_cache_key(FakeRedis(None), None, 10, 0) == 'ingestion:records:v0:[null,10,0]'

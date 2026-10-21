@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { apiRequest, emptyMetrics, type Health, type Job, type Metrics, type RecordPage } from '@/lib/api';
+import { emptyMetrics, type Health, type Job, type Metrics, type RecordPage } from '@/lib/api';
+import { readOperationalState, servicesOnline } from '@/lib/operational-state';
 import { ArchitectureFlow } from './architecture-flow';
 import { HealthStrip } from './health-strip';
 import { IngestionConsole } from './ingestion-console';
@@ -20,31 +21,31 @@ export function Dashboard() {
   const [source, setSource] = useState('');
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const generation = useRef(0);
 
-  const refresh = useCallback(async () => {
-    const sourceQuery = source.trim() ? `&source=${encodeURIComponent(source.trim())}` : '';
-    try {
-      const [nextHealth, nextMetrics, nextJobs, nextRecords] = await Promise.all([
-        apiRequest<Health>('health'),
-        apiRequest<Metrics>('metrics'),
-        apiRequest<Job[]>('jobs?limit=10'),
-        apiRequest<RecordPage>(`records?limit=12${sourceQuery}`),
-      ]);
-      setHealth(nextHealth);
-      setMetrics(nextMetrics);
-      setJobs(nextJobs);
-      setRecords(nextRecords);
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    const current = ++generation.current;
+    const snapshot = await readOperationalState(source, signal, (nextHealth) => {
+      if (current === generation.current && !signal?.aborted) setHealth(nextHealth);
+    });
+    if (current !== generation.current || signal?.aborted) return;
+    setHealth(snapshot.health);
+    setError(snapshot.error);
+    if (snapshot.data) {
+      setMetrics(snapshot.data.metrics);
+      setJobs(snapshot.data.jobs);
+      setRecords(snapshot.data.records);
       setLastUpdated(new Date());
-      setError('');
-    } catch (caught) {
-      setError((caught as Error).message || 'The operational API is unavailable.');
     }
   }, [source]);
 
   useEffect(() => {
-    const kickoff = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(() => void refresh(), 3000);
+    const controller = new AbortController();
+    const kickoff = window.setTimeout(() => void refresh(controller.signal), 0);
+    const timer = window.setInterval(() => void refresh(controller.signal), 3000);
     return () => {
+      controller.abort();
+      generation.current += 1;
       window.clearTimeout(kickoff);
       window.clearInterval(timer);
     };
@@ -52,11 +53,10 @@ export function Dashboard() {
 
   function accepted(job: Job) {
     setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)].slice(0, 10));
-    setMetrics((current) => ({ ...current, jobs: current.jobs + 1, queued: current.queued + 1 }));
     window.setTimeout(() => void refresh(), 700);
   }
 
-  const online = health?.database === 'connected' && health?.redis === 'connected';
+  const online = servicesOnline(health);
 
   return (
     <main className="mx-auto min-h-screen w-[min(1440px,calc(100%-2rem))] pb-12 sm:w-[min(1440px,calc(100%-4rem))]">
@@ -66,7 +66,7 @@ export function Dashboard() {
           <div><strong className="block text-sm tracking-wide text-white">ENTERPRISE INGESTION</strong><span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Operations control plane</span></div>
         </div>
         <div className="flex items-center gap-4">
-          <span className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.15em] ${online ? 'text-mint' : 'text-amber-200'}`}><i className="h-2 w-2 rounded-full bg-current shadow-[0_0_12px_currentColor]" />{online ? 'Core services online' : 'Connecting to services'}</span>
+          <span className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.15em] ${online ? 'text-mint' : 'text-amber-200'}`}><i className="h-2 w-2 rounded-full bg-current shadow-[0_0_12px_currentColor]" />{online ? 'Core services online' : health ? 'Services degraded' : 'Services unavailable'}</span>
           <a className="rounded-lg border border-slate-700 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-300 transition hover:border-cyan hover:text-cyan" href={process.env.NEXT_PUBLIC_API_DOCS_URL || 'http://localhost:8000/docs'} target="_blank" rel="noreferrer">OpenAPI docs ↗</a>
         </div>
       </header>
@@ -88,7 +88,7 @@ export function Dashboard() {
       <section aria-labelledby="overview-title">
         <div className="mb-5 flex items-end justify-between">
           <div><p className="label">01 / OPERATIONAL OVERVIEW</p><h2 id="overview-title" className="section-title">Pipeline at a glance</h2></div>
-          <span className="badge">LIVE DATABASE COUNTS</span>
+          <span className="badge">{error ? 'DATA MAY BE STALE' : 'CACHED DATABASE COUNTS'}</span>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           <MetricCard label="Persisted records" value={metrics.records} detail="Current PostgreSQL rows" accent="cyan" />

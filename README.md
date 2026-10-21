@@ -19,11 +19,11 @@ The potential ROI is architectural rather than a fabricated benchmark: fewer dup
 ### System invariants
 
 - A job is committed to PostgreSQL before dispatch is attempted.
-- A successful asynchronous submission returns `202 Accepted`; a broker failure returns `503` and marks the durable job failed.
-- Reusing an idempotency key with the same canonical request returns the original job; reusing it with different data returns `409 Conflict`.
-- The worker upserts on `(source, external_id)`, so task retries do not create duplicate records.
+- A fresh submission returns `202 Accepted` after dispatch. If publishing fails, only a still-queued job can be cancelled with `503`; processing/completed work is preserved because delivery may already have happened.
+- Reusing an idempotency key with the same canonical request returns the original job: `202` for outstanding work, `200` for completed work, and `503` for failed work. Different data returns `409 Conflict`. Failed jobs require a new key for an intentional new submission.
+- A PostgreSQL session advisory lock serializes each job across status and record commits. Duplicate deliveries re-read state under the lock and skip terminal jobs. Record upserts prevent duplicate rows on retries.
 - Job states are limited to `queued`, `processing`, `completed`, and `failed`.
-- Record and metrics caches are invalidated after a committed ingestion and degrade to PostgreSQL if Redis reads fail.
+- Record and metrics cache invalidation is attempted after a committed ingestion. If invalidation fails, existing cached responses can remain stale until their TTL (20 seconds by default). Redis read failures fall back to PostgreSQL.
 - API record reads are bounded to 100 rows per request.
 
 ## Architecture
@@ -55,7 +55,7 @@ The write path is asynchronous after the durable job is created. The read path u
 |---|---|
 | Next.js 16, React 19, TypeScript, Tailwind | Responsive dashboard, ingestion console, polling, job table, record explorer, and architecture view |
 | FastAPI, Pydantic v2 | Validation, REST API, OpenAPI, CORS, dependency health, and error contracts |
-| Celery | Background execution, bounded retries for transient dependency failures, and late acknowledgements |
+| Celery | Background execution, bounded processing retries, continuing terminal-state recovery, and late acknowledgements |
 | Redis 7.2 | Celery broker/result backend plus short-lived, versioned read caches |
 | PostgreSQL 16, SQLAlchemy, Alembic | Durable jobs and records, uniqueness constraints, indexes, and schema migrations |
 | Docker Compose | Local networking, health checks, persistent volumes, and five-service orchestration |
@@ -138,7 +138,31 @@ curl http://localhost:8000/jobs/JOB_ID
 curl 'http://localhost:8000/records?source=demo-crm&limit=20'
 ```
 
-Requests contain at most 100 items. `source` and `external_id` have bounded formats and lengths; extra fields are rejected.
+Requests contain at most 100 items. `source` is 1–80 ASCII letters/digits/dot/underscore/hyphen, starting with a letter or digit. `external_id` is optional, 1–128 characters when supplied, and rejects control characters (including NUL) and invalid Unicode surrogates. Extra fields are rejected. Transient database failures return sanitized JSON `503` responses.
+
+### Failure recovery and ordering
+
+Processing has an initial attempt and up to three transient database retries.
+After that budget is exhausted, deliveries perform **terminal-state persistence
+only**: they do not restart record processing. If PostgreSQL remains unavailable,
+Celery keeps scheduling recovery with a backoff capped at 30 seconds until it can
+persist `failed` (or observe an already-terminal job). Permanent processing errors
+use the same durable failure path. If publishing a retry fails, the original
+delivery is rejected with requeue rather than acknowledged as completed.
+
+Recovery requires the Redis broker's queued/unacknowledged messages to survive,
+and PostgreSQL and a worker to become available again. It does not guarantee
+delivery across broker data loss. Graceful worker shutdown restores reserved
+deliveries; forced worker loss may delay redelivery until Redis's visibility
+timeout (Celery's default is one hour). PostgreSQL is the authority for job status;
+the Celery result can be successful when its recovery bookkeeping has correctly
+persisted a failed application job. The separate processing status commit makes
+`processing` observable; record writes and `completed` commit atomically while
+the per-job lock remains held. A worker/process disconnect releases that lock.
+
+Serialization protects **duplicate execution of the same job**. Distinct jobs
+updating the same `(source, external_id)` follow commit order; no source event-time
+ordering or monotonic version contract is implemented.
 
 ## Development and testing
 
@@ -148,6 +172,8 @@ Backend tests and static checks run in the repository's Python 3.12 test image:
 docker build --target test -t enterprise-ingestion-backend-test ./backend
 docker run --rm enterprise-ingestion-backend-test pytest -q tests
 docker run --rm enterprise-ingestion-backend-test ruff check --no-cache app tests migrations
+docker run --rm enterprise-ingestion-backend-test pip check
+docker run --rm enterprise-ingestion-backend-test python security_audit.py python
 ```
 
 Frontend checks:
@@ -159,6 +185,7 @@ npm audit --omit=dev
 npm run lint
 npm run typecheck
 npm run build
+npm test
 ```
 
 Running-stack integration check:
@@ -167,7 +194,37 @@ Running-stack integration check:
 python3 backend/tests/integration_check.py
 ```
 
-The integration check covers health, `202` acceptance, same-payload idempotent replay, conflicting-key rejection, malformed payload rejection, worker completion, persisted records, and a Redis cache hit. CI runs dependency audit, lint, type checks, production build, backend unit tests, Ruff, and Compose configuration validation.
+Every integration run generates a new source and key, requires an online worker,
+and verifies a new job's attempts, completion, persisted content, cache hit, and
+record upserts/cache invalidation. It intentionally fails without a worker.
+
+CI builds the five-service stack, applies migrations, runs PostgreSQL/Redis
+regressions, executes the fresh integration check, stops the worker to verify the
+negative case, exhausts actual Celery retries using an unavailable database,
+restores a normal worker and checks durable failure recovery, then restarts the
+stack and verifies persistence. It also runs frontend health/error tests, lint,
+type checking, production builds, backend tests/Ruff, dependency compatibility,
+security audits, and Compose configuration validation.
+
+Database regressions require `RUN_DATABASE_TESTS=1`, database `ingestion_test`,
+and Redis database 15; the fixtures refuse any other database name/index. Use
+`docker-compose.test.yml` with a **separate Compose project** and unused host
+ports. These tests truncate synthetic records and flush the test Redis database.
+Never combine that override with the application project's data volumes.
+
+```bash
+# Example isolated stack; use your existing private .env for local credentials.
+COMPOSE_PROJECT_NAME=ingestion-tests FRONTEND_PORT=3102 API_PORT=8102 \
+  docker compose -f docker-compose.yml -f docker-compose.test.yml up --build --wait -d db cache api worker web
+COMPOSE_PROJECT_NAME=ingestion-tests \
+  docker compose -f docker-compose.yml -f docker-compose.test.yml build tests
+COMPOSE_PROJECT_NAME=ingestion-tests \
+  docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm tests pytest -q tests
+```
+
+See [dependency audit decisions](docs/SECURITY.md) for patched installer/test tools,
+the exact reviewed build-tool/Starlette exceptions, and their applicability.
+Audits do not currently report zero advisories across every development dependency.
 
 Apply migrations manually when running the API outside its container:
 
@@ -206,7 +263,7 @@ Planned production controls, intentionally not claimed as implemented:
 
 - This is a local reference deployment, not a hardened production topology.
 - Redis carries both broker and cache traffic; production deployments should consider separate instances and independent policies.
-- Caching is bounded by TTL and a global record-cache version. It is deliberately simple, not a substitute for query-specific cache governance.
+- Caching is bounded by TTL and a global record-cache version. Invalidation is best effort and metrics may be stale up to the configured TTL. The dashboard labels unavailable/stale data and updates health independently, including dependency-status bodies returned with HTTP 503.
 - Idempotency is enforced per submitted request key; record upserts are globally unique on `(source, external_id)`.
 - PostgreSQL and Redis do not form a single transaction. A production deployment should use an outbox/reconciliation process for a process crash between the database commit and broker publish.
 - Worker state is polled rather than streamed. WebSockets or server-sent events are not implemented.

@@ -6,11 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/srv
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip==26.2
 RUN pip install --no-cache-dir -r requirements.txt
 RUN addgroup --system app && adduser --system --ingroup app app
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
+COPY tests/integration_check.py tests/live_recovery_check.py ./tests/
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh && chown -R app:app /srv
 
@@ -19,6 +21,7 @@ USER root
 COPY requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY tests ./tests
+COPY security_audit.py ./security_audit.py
 CMD ["pytest", "-q", "tests"]
 
 FROM base AS runtime

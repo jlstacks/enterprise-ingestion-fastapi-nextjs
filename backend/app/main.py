@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from celery.exceptions import CeleryError
@@ -8,8 +9,13 @@ from fastapi.responses import JSONResponse
 from kombu.exceptions import OperationalError as KombuOperationalError
 from redis import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import func, select, text
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import func, select, text, update
+from sqlalchemy.exc import (
+    IntegrityError,
+    OperationalError,
+    SQLAlchemyError,
+    TimeoutError,
+)
 
 from .database import SessionLocal, engine
 from .models import Job, Record
@@ -44,6 +50,12 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(OperationalError)
+@app.exception_handler(TimeoutError)
+def database_unavailable(request, exc):
+    return JSONResponse(status_code=503, content={"detail": "Database unavailable; retry later"})
+
+
 def redis_client() -> Redis:
     return Redis.from_url(
         settings.redis_url,
@@ -61,13 +73,20 @@ def worker_status() -> str:
         return "unknown"
 
 
-def mark_dispatch_failed(job_id: str) -> None:
+def mark_dispatch_failed(job_id: str) -> dict:
     with SessionLocal() as session:
-        failed = session.get(Job, job_id)
-        if failed:
-            failed.status = "failed"
-            failed.error = "Message broker unavailable; job was not dispatched"
-            session.commit()
+        session.execute(update(Job).where(Job.id == job_id, Job.status == "queued").values(
+            status="failed", finished_at=datetime.now(UTC),
+            error="Dispatch could not be confirmed; job cancelled before processing. Use a new idempotency key.",
+        ))
+        session.commit()
+        return serialize_job(session.get(Job, job_id))
+
+
+def replay_result(job: Job | dict, response: Response):
+    result = serialize_job(job) if isinstance(job, Job) else job
+    response.status_code = {"completed": 200, "failed": 503}.get(result["status"], 202)
+    return result
 
 
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
@@ -122,7 +141,7 @@ def ingest(
             if existing.request_hash != request_hash:
                 raise HTTPException(status_code=409, detail="Idempotency key reused with different data")
             response.headers["Idempotency-Replayed"] = "true"
-            return serialize_job(existing)
+            return replay_result(existing, response)
 
         job = Job(
             id=str(uuid4()),
@@ -141,7 +160,7 @@ def ingest(
             existing = session.scalar(select(Job).where(Job.idempotency_key == key))
             if existing and existing.request_hash == request_hash:
                 response.headers["Idempotency-Replayed"] = "true"
-                return serialize_job(existing)
+                return replay_result(existing, response)
             raise HTTPException(status_code=409, detail="Idempotency key already used")
         session.refresh(job)
         result = serialize_job(job)
@@ -153,8 +172,7 @@ def ingest(
         redis_client().ping()
         process_batch.apply_async(args=[job.id], task_id=job.id, retry=False)
     except (CeleryError, KombuOperationalError, RedisError, OSError):
-        mark_dispatch_failed(result["id"])
-        raise HTTPException(status_code=503, detail="Message broker unavailable; job marked failed")
+        return replay_result(mark_dispatch_failed(result["id"]), response)
 
     try:
         redis_client().delete(METRICS_CACHE_KEY)

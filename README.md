@@ -1,8 +1,6 @@
 # Enterprise Ingestion & Retrieval Pipeline
 
-A runnable five-service reference application for accepting validated data batches, processing them asynchronously, persisting durable job and record state, and serving bounded record views through a Redis-backed read cache.
-
-![Enterprise ingestion dashboard](docs/screenshots/dashboard.png)
+An **AI-assisted, locally runnable reference application** demonstrating asynchronous data ingestion with Next.js, FastAPI, PostgreSQL, Redis, Celery, and Docker. Built to make architectural trade-offs inspectable in a technical interview or solutions engineering demonstration—not to represent a production-ready enterprise platform.
 
 ## Business Problem Solved
 
@@ -16,6 +14,22 @@ This project demonstrates a safer boundary:
 
 The potential ROI is architectural rather than a fabricated benchmark: fewer duplicate writes, faster incident diagnosis, and independent scaling of the HTTP and processing tiers. This repository does **not** claim a throughput, latency, cost-savings, or cache-hit target. Those outcomes require workload-specific load tests and production telemetry.
 
+## What the application does
+
+- Accepts validated JSON batches and returns a job ID for asynchronous tracking.
+- Processes batches in a dedicated Celery worker and persists records and job status in PostgreSQL.
+- Detects idempotency-key conflicts and prevents duplicate record creation during retries.
+- Provides a dashboard with dependency health, recent jobs, an ingestion console, and a bounded records explorer.
+- Uses Redis for the task broker and short-lived read caches, with explicit failure and staleness boundaries.
+
+## Dashboard
+
+![Enterprise ingestion dashboard with demonstration data](docs/screenshots/dashboard.png)
+
+Actual local application capture using synthetic demonstration data, not customer data or production telemetry. The capture predates the remediation's refined health/staleness labels; current behavior is covered by the regression tests.
+
+## Architecture and technology stack
+
 ### System invariants
 
 - A job is committed to PostgreSQL before dispatch is attempted.
@@ -25,8 +39,6 @@ The potential ROI is architectural rather than a fabricated benchmark: fewer dup
 - Job states are limited to `queued`, `processing`, `completed`, and `failed`.
 - Record and metrics cache invalidation is attempted after a committed ingestion. If invalidation fails, existing cached responses can remain stale until their TTL (20 seconds by default). Redis read failures fall back to PostgreSQL.
 - API record reads are bounded to 100 rows per request.
-
-## Architecture
 
 ```mermaid
 flowchart LR
@@ -62,7 +74,16 @@ The write path is asynchronous after the durable job is created. The read path u
 
 > The requested scaffold specified Next.js 14. It was upgraded to Next.js 16 because the latest 14.x release still produced critical production dependency advisories during implementation. The application still uses the requested App Router and TypeScript architecture.
 
-## Run locally
+## Example: a partner account batch
+
+1. An integration developer submits two synthetic accounts with one idempotency key. FastAPI validates the request, commits a queued job, and publishes its ID to Redis before returning `202 Accepted`.
+2. Celery reserves the task, serializes execution of that job, and marks it processing. Record upserts and the completed state commit together in PostgreSQL.
+3. The worker attempts cache invalidation. The dashboard polls the durable job state and retrieves the stored accounts through the cache-backed API.
+4. Repeating the same request/key retrieves the original job rather than scheduling another batch; changing the data under that key returns `409 Conflict`.
+
+This demonstrates the customer-facing conversation around decoupling intake from processing, making retries safer, and explaining operational failure boundaries. It does not establish measured ROI or delivery guarantees.
+
+## Local setup and demonstration
 
 Requirements: Docker with Compose v2 and free ports 3000 and 8000.
 
@@ -110,11 +131,11 @@ Inside Compose, `DATABASE_URL`, `REDIS_URL`, `ALLOWED_ORIGINS`, and `API_INTERNA
 | Method | Endpoint | Behavior |
 |---|---|---|
 | `GET` | `/health` | Reports API, database, Redis, and worker health |
-| `POST` | `/ingest` | Validates and durably queues a batch; returns 202 |
+| `POST` | `/ingest` | Fresh dispatched jobs return 202; replays return 200/202/503 by state, conflicts 409 |
 | `GET` | `/jobs?limit=10` | Lists recent jobs |
 | `GET` | `/jobs/{job_id}` | Returns one durable job state |
 | `GET` | `/records?limit=12&offset=0&source=demo-crm` | Returns bounded, optionally source-filtered records |
-| `GET` | `/metrics` | Returns live database counts by job state |
+| `GET` | `/metrics` | Returns database counts by job state, cached for the configured TTL |
 
 Submit a demonstration batch:
 
@@ -278,6 +299,10 @@ Planned production controls, intentionally not claimed as implemented:
 5. Add a transactional outbox/reconciler, dead-letter/replay tooling, queue-depth alerts, tracing, structured logs, and service-level objectives.
 6. Run reproducible load and failure tests before making performance or delivery guarantees.
 
-## License
+## License and supporting documentation
 
 [MIT](LICENSE)
+
+- [Remediation and regression evidence](docs/REMEDIATION.md)
+- [Dependency security decisions and exact exceptions](docs/SECURITY.md)
+- [Continuous integration workflow](.github/workflows/ci.yml)

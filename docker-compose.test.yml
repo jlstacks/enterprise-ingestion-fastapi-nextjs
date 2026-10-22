@@ -1,0 +1,22 @@
+# Use with a unique Compose project name; never combine this with application data.
+services:
+  db:
+    environment:
+      POSTGRES_DB: ingestion_test
+  api:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ingestion}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/ingestion_test
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@cache:6379/15
+  worker:
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ingestion}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/ingestion_test
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@cache:6379/15
+  tests:
+    build:
+      context: ./backend
+      target: test
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ingestion}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/ingestion_test
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@cache:6379/15
+      TEST_API_URL: http://api:8000
+      RUN_DATABASE_TESTS: 1

@@ -1,0 +1,1 @@
+"""Asynchronous ingestion demo application."""

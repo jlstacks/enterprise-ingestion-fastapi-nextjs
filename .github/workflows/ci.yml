@@ -15,7 +15,7 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -32,7 +32,7 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build --target test -t enterprise-ingestion-backend-test ./backend
       - run: docker run --rm enterprise-ingestion-backend-test pytest -q tests
       - run: docker run --rm enterprise-ingestion-backend-test ruff check --no-cache app tests migrations security_audit.py
@@ -42,7 +42,7 @@ jobs:
   compose-config:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cp .env.example .env
       - run: docker compose config --quiet
 
@@ -56,7 +56,7 @@ jobs:
       POSTGRES_PASSWORD: ci-postgres-only
       REDIS_PASSWORD: ci-redis-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker compose up --build --wait -d db cache api worker web
       - run: docker compose build tests
       - name: Regression tests against real PostgreSQL and Redis

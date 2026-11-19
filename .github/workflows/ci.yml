@@ -4,9 +4,15 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "57 8 * * 1"
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   frontend:
@@ -15,8 +21,10 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -32,7 +40,9 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: docker build --target test -t enterprise-ingestion-backend-test ./backend
       - run: docker run --rm enterprise-ingestion-backend-test pytest -q tests
       - run: docker run --rm enterprise-ingestion-backend-test ruff check --no-cache app tests migrations security_audit.py
@@ -40,13 +50,17 @@ jobs:
       - run: docker run --rm enterprise-ingestion-backend-test python security_audit.py python
 
   compose-config:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: cp .env.example .env
       - run: docker compose config --quiet
 
   integration:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -56,7 +70,9 @@ jobs:
       POSTGRES_PASSWORD: ci-postgres-only
       REDIS_PASSWORD: ci-redis-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: docker compose up --build --wait -d db cache api worker web
       - run: docker compose build tests
       - name: Regression tests against real PostgreSQL and Redis
@@ -78,7 +94,7 @@ jobs:
       - name: Verify real retry exhaustion and recovery
         run: |
           docker compose exec -T api python tests/live_recovery_check.py queue
-          docker compose run -d --name ingestion-ci-outage-worker -e DATABASE_URL=postgresql://unavailable@127.0.0.1:1/ingestion_test worker
+          docker compose run -d --no-deps --name ingestion-ci-outage-worker -e DATABASE_URL=postgresql://unavailable@127.0.0.1:1/ingestion_test worker
           docker compose exec -T api python tests/live_recovery_check.py await-retry
           docker stop ingestion-ci-outage-worker
           docker rm ingestion-ci-outage-worker
@@ -98,3 +114,12 @@ jobs:
         run: |
           docker rm -f ingestion-ci-outage-worker 2>/dev/null || true
           docker compose down --volumes --remove-orphans
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high

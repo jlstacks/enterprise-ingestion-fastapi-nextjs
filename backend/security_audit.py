@@ -10,10 +10,6 @@ from pathlib import Path
 EXCEPTIONS = {
     ("braces", "3.0.3"): {"GHSA-vfj7-8cjw-p6xm"},
     ("postcss-selector-parser", "6.1.5"): {"GHSA-rj75-hqrm-r3gf"},
-    ("starlette", "0.52.1"): {
-        "GHSA-86qp-5c8j-p5mr", "GHSA-wqp7-x3pw-xc5r", "GHSA-x746-7m8f-x49c",
-        "GHSA-82w8-qh3p-5jfq", "GHSA-jp82-jpqv-5vv3",
-    },
 }
 
 

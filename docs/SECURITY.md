@@ -35,24 +35,12 @@ these exceptions when compatible patched upstream releases become available,
 before accepting untrusted CSS/glob input, or before broader public deployment.
 Build-tool exceptions do not make arbitrary third-party PR code safe to execute.
 
-## Reviewed Starlette 0.52.1 exceptions
+## Starlette upgrade
 
-FastAPI 0.128.8 requires Starlette `<1.0.0`; the following fixes require Starlette
-1.x. Forcing that version would violate the installed framework's dependency
-contract. A coordinated FastAPI/Starlette upgrade is future work.
-
-| Advisory | Applicability in this application |
-|---|---|
-| [GHSA-86qp-5c8j-p5mr](https://github.com/advisories/GHSA-86qp-5c8j-p5mr) | No authorization or security decision uses `request.url` or `request.url.path`. |
-| [GHSA-jp82-jpqv-5vv3](https://github.com/advisories/GHSA-jp82-jpqv-5vv3) | No security decision uses a reconstructed request URL, including middleware and exception handlers. |
-| [GHSA-wqp7-x3pw-xc5r](https://github.com/advisories/GHSA-wqp7-x3pw-xc5r) | Docker runs Linux; no Windows StaticFiles/UNC-path handler is used. |
-| [GHSA-x746-7m8f-x49c](https://github.com/advisories/GHSA-x746-7m8f-x49c) | No HTTPEndpoint subclass is registered. FastAPI routes declare their HTTP methods. |
-| [GHSA-82w8-qh3p-5jfq](https://github.com/advisories/GHSA-82w8-qh3p-5jfq) | The API accepts JSON; it never calls `request.form()` or declares form endpoints. |
-
-Reassess before adding any affected feature, middleware, URL-based access checks,
-or public deployment. No remote exploit of these advisories was demonstrated in
-this implementation. Audit exceptions do not substitute for ingress validation,
-authentication, TLS, request-size limits, or deployment-specific threat review.
+FastAPI 0.165.0 and Starlette 1.10.0 supersede the earlier FastAPI 0.128.8
+and Starlette 0.52.1 pair. The audit now rejects the five formerly excepted
+Starlette advisories. The newest minimum fixed version among the five is
+[Starlette 1.3.1](https://github.com/advisories/GHSA-82w8-qh3p-5jfq).
 
 ## Running the audits
 
